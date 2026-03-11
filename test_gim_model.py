@@ -31,7 +31,7 @@ class GimPackageTests(unittest.TestCase):
             self.assertIn("raw.gim", pkg.file_paths())
 
     def test_gbk_binary_property_extract(self) -> None:
-        text = "[设计参数]\nVoltageLevel=电压等级=10\n"
+        text = "[设计参数]\nVoltageLevel=电压等级=10\n工程中名称=工程中名称=导线类设备_排母线015\n"
         data = text.encode("gb18030")
         doc = parse_property_from_bytes("a.bin", data)
         self.assertIsNotNone(doc)

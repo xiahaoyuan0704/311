@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import bz2
+import gzip
 import json
+import lzma
 from pathlib import Path
 import re
 import string
+import zlib
 import zipfile
 
 
@@ -88,9 +92,8 @@ class GimPackage:
         return self.files[path]
 
     def read_text_auto(self, path: str) -> str:
-        data = self.files[path]
-        text, _ = decode_bytes_auto(data)
-        return text
+        text, _enc, score = decode_bytes_auto_scored(self.files[path])
+        return text if score >= 0.55 else ""
 
     def write_text(self, path: str, text: str, encoding: str = "utf-8") -> None:
         self.files[path] = text.encode(encoding)
@@ -106,24 +109,56 @@ def _safe_text_ratio(text: str) -> float:
     if not text:
         return 0.0
     safe_chars = set(string.printable) | set("电压等级工程标识系统编码调度名称设备参数中文值（）【】、：；，。-_/[]")
-    ok = sum(1 for ch in text if ch in safe_chars or ch.isalnum() or '\u4e00' <= ch <= '\u9fff')
-    return ok / len(text)
+    ok = 0
+    for ch in text:
+        if ch == "�":
+            continue
+        if ch in safe_chars or ch.isalnum() or "\u4e00" <= ch <= "\u9fff":
+            ok += 1
+    penalty = text.count("�") / max(1, len(text))
+    return max(0.0, ok / len(text) - penalty)
+
+
+def _decompress_candidates(data: bytes) -> list[bytes]:
+    out = [data]
+    for fn in (gzip.decompress, zlib.decompress, bz2.decompress, lzma.decompress):
+        try:
+            raw = fn(data)
+            if raw and raw not in out:
+                out.append(raw)
+        except Exception:
+            pass
+    return out
+
+
+def _utf16le_strings(data: bytes) -> list[str]:
+    # 提取 UTF-16LE 可打印字符串片段
+    s = data.decode("utf-16-le", errors="ignore")
+    return [x.strip() for x in re.split(r"[\x00\r\n]+", s) if len(x.strip()) >= 4]
+
+
+def decode_bytes_auto_scored(data: bytes) -> tuple[str, str, float]:
+    best = ("", "unknown", 0.0)
+    for raw in _decompress_candidates(data):
+        for enc in COMMON_ENCODINGS:
+            try:
+                text = raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+            score = _safe_text_ratio(text[:6000])
+            if score > best[2]:
+                best = (text, enc, score)
+
+    if best[0]:
+        return best
+
+    fallback = data.decode("utf-8", errors="replace")
+    return fallback, "utf-8-replace", _safe_text_ratio(fallback[:6000])
 
 
 def decode_bytes_auto(data: bytes) -> tuple[str, str]:
-    best = ("", "unknown", 0.0)
-    for enc in COMMON_ENCODINGS:
-        try:
-            text = data.decode(enc)
-        except UnicodeDecodeError:
-            continue
-        score = _safe_text_ratio(text[:4000])
-        if score > best[2]:
-            best = (text, enc, score)
-    if best[0]:
-        return best[0], best[1]
-    # 最后兜底，不再用 latin1 参与“属性解析”，仅用于文本预览
-    return data.decode("utf-8", errors="replace"), "utf-8-replace"
+    text, enc, _score = decode_bytes_auto_scored(data)
+    return text, enc
 
 
 def _looks_text(data: bytes) -> bool:
@@ -133,12 +168,12 @@ def _looks_text(data: bytes) -> bool:
     null_ratio = sample.count(b"\x00") / len(sample)
     if null_ratio > 0.2:
         return False
-    text, _ = decode_bytes_auto(sample)
-    return _safe_text_ratio(text) > 0.55
+    _t, _enc, score = decode_bytes_auto_scored(sample)
+    return score > 0.70
 
 
 def _parse_property_line(line: str) -> TextProperty | None:
-    if "=" not in line or len(line) > 300:
+    if "=" not in line or len(line) > 280:
         return None
     parts = [part.strip() for part in line.split("=")]
     if len(parts) >= 3:
@@ -153,11 +188,10 @@ def _parse_property_line(line: str) -> TextProperty | None:
     if not re.search(r"[A-Za-z0-9\u4e00-\u9fff]", key):
         return None
 
-    # 乱码字符过多时拒绝
     noisy = key + label + value
-    if noisy.count("�") > 2:
+    if noisy.count("�") > 1:
         return None
-    if _safe_text_ratio(noisy) < 0.45:
+    if _safe_text_ratio(noisy) < 0.55:
         return None
 
     return TextProperty(key=key, label=label or key, value=value)
@@ -169,7 +203,7 @@ def _extract_property_lines(text: str) -> str:
         line = raw.strip().replace("\x00", "").replace("\ufeff", "")
         if not line:
             continue
-        if line.startswith("[") and line.endswith("]") and len(line) <= 80:
+        if line.startswith("[") and line.endswith("]") and 2 < len(line) <= 80:
             kept.append(line)
             continue
         if _parse_property_line(line) is not None:
@@ -182,29 +216,32 @@ def _parse_property_candidates(text: str) -> PropertyDocument | None:
     if not cleaned:
         return None
     doc = PropertyDocument.parse(cleaned)
-    if doc.property_count() >= 1:
-        return doc
-    return None
+    return doc if doc.property_count() >= 2 else None
 
 
 def parse_property_from_bytes(path: str, data: bytes) -> PropertyDocument | None:
     ext = Path(path).suffix.lower()
 
-    # 先用最佳编码尝试
-    text, _enc = decode_bytes_auto(data)
-    by_text = parse_property_document(path, text)
-    if by_text is not None and by_text.property_count() >= 2:
-        return by_text
+    text, _enc, score = decode_bytes_auto_scored(data)
+    if score >= 0.65:
+        by_text = parse_property_document(path, text)
+        if by_text is not None:
+            return by_text
 
-    # 再做清洗提取，避免整段乱码误判为属性
     extracted = _extract_property_lines(text)
     if extracted:
         doc = _parse_property_candidates(extracted)
         if doc is not None:
             return doc
 
-    # 扩展名是常见属性文件时，降低门槛再试一次
-    if ext in PROPERTY_EXTENSIONS:
+    # 尝试 UTF-16LE 字符串扫描（很多二进制容器会这样嵌入属性）
+    utf16_hits = _utf16le_strings(data)
+    if utf16_hits:
+        doc = _parse_property_candidates("\n".join(utf16_hits))
+        if doc is not None:
+            return doc
+
+    if ext in PROPERTY_EXTENSIONS and score >= 0.55:
         doc = _parse_property_candidates(text)
         if doc is not None:
             return doc
@@ -251,7 +288,7 @@ def parse_property_document(path: str, text: str) -> PropertyDocument | None:
 
 def can_preview_as_text(path: str, data: bytes) -> bool:
     ext = Path(path).suffix.lower()
-    return ext in TEXT_EXTENSIONS or _looks_text(data)
+    return ext in TEXT_EXTENSIONS and _looks_text(data) or _looks_text(data)
 
 
 def parse_obj_vertices_edges(text: str) -> tuple[list[tuple[float, float, float]], list[tuple[int, int]]]:
