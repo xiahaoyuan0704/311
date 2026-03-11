@@ -4,11 +4,13 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
+import string
 import zipfile
 
 
 TEXT_EXTENSIONS = {".fam", ".cbm", ".dev", ".phm", ".txt", ".ini", ".cfg", ".json", ".mod", ".xml", ".gim"}
 PROPERTY_EXTENSIONS = {".fam", ".cbm", ".dev", ".phm", ".ini", ".cfg", ".txt", ".gim"}
+COMMON_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "gbk", "utf-16-le", "utf-16-be")
 
 
 @dataclass
@@ -39,19 +41,15 @@ class PropertyDocument:
             if not line or line.startswith("#") or line.startswith(";"):
                 continue
 
-            if line.startswith("[") and line.endswith("]") and len(line) >= 2:
-                current = PropertySection(name=line[1:-1].strip() or "未命名")
+            if line.startswith("[") and line.endswith("]") and len(line) >= 3:
+                name = line[1:-1].strip() or "未命名"
+                current = PropertySection(name=name)
                 sections.append(current)
                 continue
 
-            parts = [part.strip() for part in line.split("=")]
-            if len(parts) >= 3:
-                key, label, value = parts[0], parts[1], "=".join(parts[2:])
-            elif len(parts) == 2:
-                key, label, value = parts[0], parts[0], parts[1]
-            else:
-                key, label, value = line, line, ""
-            current.properties.append(TextProperty(key=key, label=label, value=value))
+            item = _parse_property_line(line)
+            if item is not None:
+                current.properties.append(item)
 
         if sections and sections[0].name == "默认" and not sections[0].properties:
             sections.pop(0)
@@ -90,7 +88,9 @@ class GimPackage:
         return self.files[path]
 
     def read_text_auto(self, path: str) -> str:
-        return decode_bytes_auto(self.files[path])
+        data = self.files[path]
+        text, _ = decode_bytes_auto(data)
+        return text
 
     def write_text(self, path: str, text: str, encoding: str = "utf-8") -> None:
         self.files[path] = text.encode(encoding)
@@ -102,13 +102,28 @@ class GimPackage:
                 zf.writestr(path, data)
 
 
-def decode_bytes_auto(data: bytes) -> str:
-    for enc in ("utf-8", "utf-8-sig", "gb18030", "gbk", "utf-16", "latin1"):
+def _safe_text_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    safe_chars = set(string.printable) | set("电压等级工程标识系统编码调度名称设备参数中文值（）【】、：；，。-_/[]")
+    ok = sum(1 for ch in text if ch in safe_chars or ch.isalnum() or '\u4e00' <= ch <= '\u9fff')
+    return ok / len(text)
+
+
+def decode_bytes_auto(data: bytes) -> tuple[str, str]:
+    best = ("", "unknown", 0.0)
+    for enc in COMMON_ENCODINGS:
         try:
-            return data.decode(enc)
+            text = data.decode(enc)
         except UnicodeDecodeError:
             continue
-    return data.decode("utf-8", errors="replace")
+        score = _safe_text_ratio(text[:4000])
+        if score > best[2]:
+            best = (text, enc, score)
+    if best[0]:
+        return best[0], best[1]
+    # 最后兜底，不再用 latin1 参与“属性解析”，仅用于文本预览
+    return data.decode("utf-8", errors="replace"), "utf-8-replace"
 
 
 def _looks_text(data: bytes) -> bool:
@@ -118,38 +133,82 @@ def _looks_text(data: bytes) -> bool:
     null_ratio = sample.count(b"\x00") / len(sample)
     if null_ratio > 0.2:
         return False
-    text_like = sum(32 <= b < 127 or b in (9, 10, 13) for b in sample)
-    return text_like / len(sample) > 0.45
+    text, _ = decode_bytes_auto(sample)
+    return _safe_text_ratio(text) > 0.55
 
 
-def _extract_printable_lines(data: bytes) -> str:
-    text = decode_bytes_auto(data)
-    lines = []
-    for line in text.splitlines():
-        clean = line.strip().replace("\x00", "")
-        if not clean:
+def _parse_property_line(line: str) -> TextProperty | None:
+    if "=" not in line or len(line) > 300:
+        return None
+    parts = [part.strip() for part in line.split("=")]
+    if len(parts) >= 3:
+        key, label, value = parts[0], parts[1], "=".join(parts[2:])
+    elif len(parts) == 2:
+        key, label, value = parts[0], parts[0], parts[1]
+    else:
+        return None
+
+    if not key or len(key) > 120:
+        return None
+    if not re.search(r"[A-Za-z0-9\u4e00-\u9fff]", key):
+        return None
+
+    # 乱码字符过多时拒绝
+    noisy = key + label + value
+    if noisy.count("�") > 2:
+        return None
+    if _safe_text_ratio(noisy) < 0.45:
+        return None
+
+    return TextProperty(key=key, label=label or key, value=value)
+
+
+def _extract_property_lines(text: str) -> str:
+    kept: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip().replace("\x00", "").replace("\ufeff", "")
+        if not line:
             continue
-        if any(ch.isalnum() for ch in clean) and ("=" in clean or ("[" in clean and "]" in clean)):
-            lines.append(clean)
-    return "\n".join(lines)
+        if line.startswith("[") and line.endswith("]") and len(line) <= 80:
+            kept.append(line)
+            continue
+        if _parse_property_line(line) is not None:
+            kept.append(line)
+    return "\n".join(kept)
 
 
 def _parse_property_candidates(text: str) -> PropertyDocument | None:
-    doc = PropertyDocument.parse(text)
-    if doc.property_count() >= 2:
+    cleaned = _extract_property_lines(text)
+    if not cleaned:
+        return None
+    doc = PropertyDocument.parse(cleaned)
+    if doc.property_count() >= 1:
         return doc
     return None
 
 
 def parse_property_from_bytes(path: str, data: bytes) -> PropertyDocument | None:
-    text = decode_bytes_auto(data)
+    ext = Path(path).suffix.lower()
+
+    # 先用最佳编码尝试
+    text, _enc = decode_bytes_auto(data)
     by_text = parse_property_document(path, text)
-    if by_text is not None and by_text.property_count() > 0:
+    if by_text is not None and by_text.property_count() >= 2:
         return by_text
 
-    guessed = _extract_printable_lines(data)
-    if guessed:
-        return _parse_property_candidates(guessed)
+    # 再做清洗提取，避免整段乱码误判为属性
+    extracted = _extract_property_lines(text)
+    if extracted:
+        doc = _parse_property_candidates(extracted)
+        if doc is not None:
+            return doc
+
+    # 扩展名是常见属性文件时，降低门槛再试一次
+    if ext in PROPERTY_EXTENSIONS:
+        doc = _parse_property_candidates(text)
+        if doc is not None:
+            return doc
+
     return None
 
 
@@ -184,9 +243,9 @@ def load_gim_package(path: str | Path) -> GimPackage:
 def parse_property_document(path: str, text: str) -> PropertyDocument | None:
     ext = Path(path).suffix.lower()
     if ext in PROPERTY_EXTENSIONS:
-        return PropertyDocument.parse(text)
-    if "=" in text and ("[" in text and "]" in text):
-        return PropertyDocument.parse(text)
+        return _parse_property_candidates(text)
+    if "=" in text and ("[" in text and "]"):
+        return _parse_property_candidates(text)
     return None
 
 

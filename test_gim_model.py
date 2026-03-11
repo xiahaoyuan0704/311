@@ -61,7 +61,9 @@ class GimPackageTests(unittest.TestCase):
 
     def test_decode_bytes_auto(self) -> None:
         raw = "电压等级=10".encode("gb18030")
-        self.assertIn("电压等级", decode_bytes_auto(raw))
+        text, enc = decode_bytes_auto(raw)
+        self.assertIn("电压等级", text)
+        self.assertTrue(enc)
 
 
 if __name__ == "__main__":
