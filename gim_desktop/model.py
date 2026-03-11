@@ -3,39 +3,43 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
-from typing import Any
 import zipfile
 
 
+TEXT_EXTENSIONS = {".fam", ".cbm", ".dev", ".phm", ".txt", ".ini", ".cfg", ".json", ".mod", ".xml"}
+PROPERTY_EXTENSIONS = {".fam", ".cbm", ".dev", ".phm", ".ini", ".cfg", ".txt"}
+
+
 @dataclass
-class FamProperty:
+class TextProperty:
     key: str
     label: str
     value: str
 
 
 @dataclass
-class FamSection:
+class PropertySection:
     name: str
-    properties: list[FamProperty] = field(default_factory=list)
+    properties: list[TextProperty] = field(default_factory=list)
 
 
 @dataclass
-class FamDocument:
-    sections: list[FamSection] = field(default_factory=list)
+class PropertyDocument:
+    sections: list[PropertySection] = field(default_factory=list)
 
     @staticmethod
-    def parse(text: str) -> "FamDocument":
-        sections: list[FamSection] = []
-        current = FamSection(name="默认")
+    def parse(text: str) -> "PropertyDocument":
+        sections: list[PropertySection] = []
+        current = PropertySection(name="默认")
         sections.append(current)
 
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line:
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or line.startswith(";"):
                 continue
+
             if line.startswith("[") and line.endswith("]") and len(line) >= 2:
-                current = FamSection(name=line[1:-1].strip() or "未命名")
+                current = PropertySection(name=line[1:-1].strip() or "未命名")
                 sections.append(current)
                 continue
 
@@ -48,12 +52,11 @@ class FamDocument:
                 key = line
                 label = line
                 value = ""
-            current.properties.append(FamProperty(key=key, label=label, value=value))
+            current.properties.append(TextProperty(key=key, label=label, value=value))
 
-        # 移除空默认段
         if sections and sections[0].name == "默认" and not sections[0].properties:
             sections.pop(0)
-        return FamDocument(sections=sections)
+        return PropertyDocument(sections=sections)
 
     def to_text(self) -> str:
         lines: list[str] = []
@@ -65,6 +68,13 @@ class FamDocument:
                 lines.append(f"{prop.key}={prop.label}={prop.value}")
         return "\n".join(lines) + "\n"
 
+    def to_flat_dict(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for section in self.sections:
+            for prop in section.properties:
+                out[prop.key] = prop.value
+        return out
+
 
 @dataclass
 class GimPackage:
@@ -74,14 +84,14 @@ class GimPackage:
     def file_paths(self) -> list[str]:
         return sorted(self.files.keys())
 
+    def read_bytes(self, path: str) -> bytes:
+        return self.files[path]
+
     def read_text(self, path: str, encoding: str = "utf-8") -> str:
         return self.files[path].decode(encoding, errors="replace")
 
     def write_text(self, path: str, text: str, encoding: str = "utf-8") -> None:
         self.files[path] = text.encode(encoding)
-
-    def fam_paths(self) -> list[str]:
-        return [path for path in self.file_paths() if path.lower().endswith(".fam")]
 
     def save_as_gim_zip(self, output: str | Path) -> None:
         output = Path(output)
@@ -90,34 +100,103 @@ class GimPackage:
                 zf.writestr(path, data)
 
 
+def _looks_text(data: bytes) -> bool:
+    if not data:
+        return True
+    sample = data[:2048]
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
 def load_gim_package(path: str | Path) -> GimPackage:
     path = Path(path)
+
     if path.is_dir():
         files: dict[str, bytes] = {}
         for item in path.rglob("*"):
             if item.is_file():
-                rel = item.relative_to(path).as_posix()
-                files[rel] = item.read_bytes()
+                files[item.relative_to(path).as_posix()] = item.read_bytes()
         return GimPackage(source=str(path), files=files)
 
     if path.is_file():
-        # 兼容旧版 JSON .gim
+        # 支持旧 JSON gim
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(payload, dict) and "layers" in payload:
-                legacy_text = json.dumps(payload, ensure_ascii=False, indent=2)
-                return GimPackage(source=str(path), files={"legacy_document.gim.json": legacy_text.encode("utf-8")})
+                legacy = json.dumps(payload, ensure_ascii=False, indent=2)
+                return GimPackage(source=str(path), files={"legacy_document.gim.json": legacy.encode("utf-8")})
         except Exception:
             pass
 
-        with zipfile.ZipFile(path, "r") as zf:
-            files = {name: zf.read(name) for name in zf.namelist() if not name.endswith("/")}
-        return GimPackage(source=str(path), files=files)
+        try:
+            with zipfile.ZipFile(path, "r") as zf:
+                files = {name: zf.read(name) for name in zf.namelist() if not name.endswith("/")}
+            return GimPackage(source=str(path), files=files)
+        except zipfile.BadZipFile:
+            # 不是 zip 时也能打开为单文件包，避免“file is not a file/zip”阻断
+            return GimPackage(source=str(path), files={path.name: path.read_bytes()})
 
-    raise FileNotFoundError(path)
+    raise FileNotFoundError(f"路径不存在或不可读取: {path}")
 
 
-# ------- backward-compatible old API -------
+def parse_property_document(path: str, text: str) -> PropertyDocument | None:
+    ext = Path(path).suffix.lower()
+    if ext in PROPERTY_EXTENSIONS:
+        return PropertyDocument.parse(text)
+    return None
+
+
+def can_preview_as_text(path: str, data: bytes) -> bool:
+    ext = Path(path).suffix.lower()
+    return ext in TEXT_EXTENSIONS or _looks_text(data)
+
+
+def parse_obj_vertices_edges(text: str) -> tuple[list[tuple[float, float, float]], list[tuple[int, int]]]:
+    vertices: list[tuple[float, float, float]] = []
+    edges: set[tuple[int, int]] = set()
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("v "):
+            parts = line.split()
+            if len(parts) >= 4:
+                try:
+                    vertices.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                except ValueError:
+                    continue
+        elif line.startswith("f "):
+            parts = line.split()[1:]
+            indices: list[int] = []
+            for p in parts:
+                token = p.split("/")[0]
+                try:
+                    idx = int(token)
+                except ValueError:
+                    continue
+                if idx > 0:
+                    indices.append(idx - 1)
+            for i in range(len(indices)):
+                a = indices[i]
+                b = indices[(i + 1) % len(indices)]
+                if a != b:
+                    edges.add(tuple(sorted((a, b))))
+
+    return vertices, sorted(edges)
+
+
+# backward-compatible exports
+FamProperty = TextProperty
+FamSection = PropertySection
+FamDocument = PropertyDocument
+
+
 @dataclass
 class Layer:
     id: str
@@ -158,7 +237,15 @@ def load_gim(path: str | Path) -> GimDocument:
 
 def save_gim(path: str | Path, document: GimDocument) -> None:
     path = Path(path)
-    path.write_text(json.dumps({"canvas": {"width": document.canvas_width, "height": document.canvas_height, "background": document.background}, "layers": []}, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = {
+        "canvas": {
+            "width": document.canvas_width,
+            "height": document.canvas_height,
+            "background": document.background,
+        },
+        "layers": [],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def flatten_layers(layers: list[Layer]) -> list[Layer]:
