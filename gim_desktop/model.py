@@ -4,8 +4,120 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Any
+import zipfile
 
 
+@dataclass
+class FamProperty:
+    key: str
+    label: str
+    value: str
+
+
+@dataclass
+class FamSection:
+    name: str
+    properties: list[FamProperty] = field(default_factory=list)
+
+
+@dataclass
+class FamDocument:
+    sections: list[FamSection] = field(default_factory=list)
+
+    @staticmethod
+    def parse(text: str) -> "FamDocument":
+        sections: list[FamSection] = []
+        current = FamSection(name="默认")
+        sections.append(current)
+
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("[") and line.endswith("]") and len(line) >= 2:
+                current = FamSection(name=line[1:-1].strip() or "未命名")
+                sections.append(current)
+                continue
+
+            parts = [part.strip() for part in line.split("=")]
+            if len(parts) >= 3:
+                key, label, value = parts[0], parts[1], "=".join(parts[2:])
+            elif len(parts) == 2:
+                key, label, value = parts[0], parts[0], parts[1]
+            else:
+                key = line
+                label = line
+                value = ""
+            current.properties.append(FamProperty(key=key, label=label, value=value))
+
+        # 移除空默认段
+        if sections and sections[0].name == "默认" and not sections[0].properties:
+            sections.pop(0)
+        return FamDocument(sections=sections)
+
+    def to_text(self) -> str:
+        lines: list[str] = []
+        for idx, section in enumerate(self.sections):
+            if idx > 0:
+                lines.append("")
+            lines.append(f"[{section.name}]")
+            for prop in section.properties:
+                lines.append(f"{prop.key}={prop.label}={prop.value}")
+        return "\n".join(lines) + "\n"
+
+
+@dataclass
+class GimPackage:
+    source: str
+    files: dict[str, bytes]
+
+    def file_paths(self) -> list[str]:
+        return sorted(self.files.keys())
+
+    def read_text(self, path: str, encoding: str = "utf-8") -> str:
+        return self.files[path].decode(encoding, errors="replace")
+
+    def write_text(self, path: str, text: str, encoding: str = "utf-8") -> None:
+        self.files[path] = text.encode(encoding)
+
+    def fam_paths(self) -> list[str]:
+        return [path for path in self.file_paths() if path.lower().endswith(".fam")]
+
+    def save_as_gim_zip(self, output: str | Path) -> None:
+        output = Path(output)
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for path, data in self.files.items():
+                zf.writestr(path, data)
+
+
+def load_gim_package(path: str | Path) -> GimPackage:
+    path = Path(path)
+    if path.is_dir():
+        files: dict[str, bytes] = {}
+        for item in path.rglob("*"):
+            if item.is_file():
+                rel = item.relative_to(path).as_posix()
+                files[rel] = item.read_bytes()
+        return GimPackage(source=str(path), files=files)
+
+    if path.is_file():
+        # 兼容旧版 JSON .gim
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict) and "layers" in payload:
+                legacy_text = json.dumps(payload, ensure_ascii=False, indent=2)
+                return GimPackage(source=str(path), files={"legacy_document.gim.json": legacy_text.encode("utf-8")})
+        except Exception:
+            pass
+
+        with zipfile.ZipFile(path, "r") as zf:
+            files = {name: zf.read(name) for name in zf.namelist() if not name.endswith("/")}
+        return GimPackage(source=str(path), files=files)
+
+    raise FileNotFoundError(path)
+
+
+# ------- backward-compatible old API -------
 @dataclass
 class Layer:
     id: str
@@ -23,43 +135,6 @@ class Layer:
     font_size: int = 14
     children: list["Layer"] = field(default_factory=list)
 
-    @staticmethod
-    def from_dict(data: dict[str, Any]) -> "Layer":
-        return Layer(
-            id=str(data.get("id", "")),
-            name=str(data.get("name", "Unnamed Layer")),
-            type=str(data.get("type", "group")),
-            visible=bool(data.get("visible", True)),
-            opacity=float(data.get("opacity", 1.0)),
-            x=float(data.get("x", 0.0)),
-            y=float(data.get("y", 0.0)),
-            width=float(data.get("width", 0.0)),
-            height=float(data.get("height", 0.0)),
-            rotation=float(data.get("rotation", 0.0)),
-            fill=str(data.get("fill", "#808080")),
-            text=str(data.get("text", "")),
-            font_size=int(data.get("font_size", 14)),
-            children=[Layer.from_dict(item) for item in data.get("children", []) or []],
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "name": self.name,
-            "type": self.type,
-            "visible": self.visible,
-            "opacity": self.opacity,
-            "x": self.x,
-            "y": self.y,
-            "width": self.width,
-            "height": self.height,
-            "rotation": self.rotation,
-            "fill": self.fill,
-            "text": self.text,
-            "font_size": self.font_size,
-            "children": [child.to_dict() for child in self.children],
-        }
-
 
 @dataclass
 class GimDocument:
@@ -68,50 +143,23 @@ class GimDocument:
     background: str = "#1f1f1f"
     layers: list[Layer] = field(default_factory=list)
 
-    @staticmethod
-    def from_dict(data: dict[str, Any]) -> "GimDocument":
-        canvas = data.get("canvas", {})
-        return GimDocument(
-            canvas_width=int(canvas.get("width", 1280)),
-            canvas_height=int(canvas.get("height", 720)),
-            background=str(canvas.get("background", "#1f1f1f")),
-            layers=[Layer.from_dict(item) for item in data.get("layers", []) or []],
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "canvas": {
-                "width": self.canvas_width,
-                "height": self.canvas_height,
-                "background": self.background,
-            },
-            "layers": [layer.to_dict() for layer in self.layers],
-        }
-
 
 def load_gim(path: str | Path) -> GimDocument:
     path = Path(path)
-    with path.open("r", encoding="utf-8") as f:
-        payload = json.load(f)
-    if not isinstance(payload, dict):
-        raise ValueError("Invalid .gim file: root must be an object")
-    return GimDocument.from_dict(payload)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    canvas = payload.get("canvas", {})
+    return GimDocument(
+        canvas_width=int(canvas.get("width", 1280)),
+        canvas_height=int(canvas.get("height", 720)),
+        background=str(canvas.get("background", "#1f1f1f")),
+        layers=[],
+    )
 
 
 def save_gim(path: str | Path, document: GimDocument) -> None:
     path = Path(path)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(document.to_dict(), f, ensure_ascii=False, indent=2)
+    path.write_text(json.dumps({"canvas": {"width": document.canvas_width, "height": document.canvas_height, "background": document.background}, "layers": []}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def flatten_layers(layers: list[Layer]) -> list[Layer]:
-    out: list[Layer] = []
-
-    def walk(nodes: list[Layer]) -> None:
-        for node in nodes:
-            out.append(node)
-            if node.children:
-                walk(node.children)
-
-    walk(layers)
-    return out
+    return []
