@@ -13,7 +13,7 @@ import zipfile
 
 
 TEXT_EXTENSIONS = {".fam", ".cbm", ".dev", ".phm", ".txt", ".ini", ".cfg", ".json", ".mod", ".xml", ".gim"}
-PROPERTY_EXTENSIONS = {".fam", ".cbm", ".dev", ".phm", ".ini", ".cfg", ".txt", ".gim"}
+PROPERTY_EXTENSIONS = {".fam", ".cbm", ".dev", ".phm", ".mod", ".ini", ".cfg", ".txt", ".gim"}
 COMMON_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "gbk", "utf-16-le", "utf-16-be")
 
 
@@ -92,7 +92,11 @@ class GimPackage:
         return self.files[path]
 
     def read_text_auto(self, path: str) -> str:
-        text, _enc, score = decode_bytes_auto_scored(self.files[path])
+        data = self.files[path]
+        ext = Path(path).suffix.lower()
+        text, _enc, score = decode_bytes_auto_scored(data)
+        if ext in TEXT_EXTENSIONS:
+            return text
         return text if score >= 0.55 else ""
 
     def write_text(self, path: str, text: str, encoding: str = "utf-8") -> None:
@@ -288,7 +292,9 @@ def parse_property_document(path: str, text: str) -> PropertyDocument | None:
 
 def can_preview_as_text(path: str, data: bytes) -> bool:
     ext = Path(path).suffix.lower()
-    return ext in TEXT_EXTENSIONS and _looks_text(data) or _looks_text(data)
+    if ext in TEXT_EXTENSIONS:
+        return True
+    return _looks_text(data)
 
 
 def parse_obj_vertices_edges(text: str) -> tuple[list[tuple[float, float, float]], list[tuple[int, int]]]:

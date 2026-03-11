@@ -9,6 +9,7 @@
 
 ## 已实现能力
 
+- 针对你现在的工作流，优先处理 **解压后的目录输入**（CBM/DEV/MOD/PHM）。
 - 打开 `.gim`（zip）或解压目录。
 - 非 zip 的 `.gim` 也可打开（单文件回退）。
 - 多编码自动解码：`utf-8 / utf-8-sig / gb18030 / gbk / utf-16`。
@@ -51,3 +52,5 @@ python3 -m py_compile gim_desktop/*.py gim_editor.py gim_model.py launch_gim_edi
 ```
 
 > 若在服务器/容器中无图形桌面（无 `$DISPLAY`），GUI 无法弹窗，这是环境限制。
+
+- UI 文件树会优先显示这 4 个目录中的 `.fam/.cbm/.dev/.mod/.phm` 文件，避免噪声文件影响解析。

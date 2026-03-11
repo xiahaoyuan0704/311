@@ -115,7 +115,18 @@ class GimDesktopApp:
         if not self.package:
             return
         existing: set[str] = set()
-        for fp in self.package.file_paths():
+        focused_roots = {"CBM", "DEV", "MOD", "PHM"}
+        allowed_ext = {".fam", ".cbm", ".dev", ".mod", ".phm"}
+
+        file_paths = self.package.file_paths()
+        if any(path.split("/", 1)[0].upper() in focused_roots for path in file_paths):
+            file_paths = [
+                path for path in file_paths
+                if path.split("/", 1)[0].upper() in focused_roots
+                and Path(path).suffix.lower() in allowed_ext
+            ]
+
+        for fp in file_paths:
             parent = ""
             current = ""
             for part in fp.split("/"):

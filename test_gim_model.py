@@ -16,7 +16,7 @@ from gim_desktop.model import (
 class GimPackageTests(unittest.TestCase):
     def test_parse_property_for_all_property_files(self) -> None:
         text = """[设计参数]\nVoltageLevel=电压等级=10\n电网工程标识系统编码=电网工程标识系统编码=30ATD01GL1015\n"""
-        for ext in [".fam", ".cbm", ".dev", ".phm", ".gim"]:
+        for ext in [".fam", ".cbm", ".dev", ".phm", ".mod", ".gim"]:
             doc = parse_property_document(f"a{ext}", text)
             self.assertIsNotNone(doc)
             assert doc is not None
