@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import re
 import zipfile
 
 
-TEXT_EXTENSIONS = {".fam", ".cbm", ".dev", ".phm", ".txt", ".ini", ".cfg", ".json", ".mod", ".xml"}
-PROPERTY_EXTENSIONS = {".fam", ".cbm", ".dev", ".phm", ".ini", ".cfg", ".txt"}
+TEXT_EXTENSIONS = {".fam", ".cbm", ".dev", ".phm", ".txt", ".ini", ".cfg", ".json", ".mod", ".xml", ".gim"}
+PROPERTY_EXTENSIONS = {".fam", ".cbm", ".dev", ".phm", ".ini", ".cfg", ".txt", ".gim"}
 
 
 @dataclass
@@ -34,7 +35,7 @@ class PropertyDocument:
         sections.append(current)
 
         for raw in text.splitlines():
-            line = raw.strip()
+            line = raw.strip().replace("\ufeff", "")
             if not line or line.startswith("#") or line.startswith(";"):
                 continue
 
@@ -49,9 +50,7 @@ class PropertyDocument:
             elif len(parts) == 2:
                 key, label, value = parts[0], parts[0], parts[1]
             else:
-                key = line
-                label = line
-                value = ""
+                key, label, value = line, line, ""
             current.properties.append(TextProperty(key=key, label=label, value=value))
 
         if sections and sections[0].name == "默认" and not sections[0].properties:
@@ -67,6 +66,9 @@ class PropertyDocument:
             for prop in section.properties:
                 lines.append(f"{prop.key}={prop.label}={prop.value}")
         return "\n".join(lines) + "\n"
+
+    def property_count(self) -> int:
+        return sum(len(sec.properties) for sec in self.sections)
 
     def to_flat_dict(self) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -87,8 +89,8 @@ class GimPackage:
     def read_bytes(self, path: str) -> bytes:
         return self.files[path]
 
-    def read_text(self, path: str, encoding: str = "utf-8") -> str:
-        return self.files[path].decode(encoding, errors="replace")
+    def read_text_auto(self, path: str) -> str:
+        return decode_bytes_auto(self.files[path])
 
     def write_text(self, path: str, text: str, encoding: str = "utf-8") -> None:
         self.files[path] = text.encode(encoding)
@@ -100,22 +102,59 @@ class GimPackage:
                 zf.writestr(path, data)
 
 
+def decode_bytes_auto(data: bytes) -> str:
+    for enc in ("utf-8", "utf-8-sig", "gb18030", "gbk", "utf-16", "latin1"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def _looks_text(data: bytes) -> bool:
     if not data:
         return True
-    sample = data[:2048]
-    if b"\x00" in sample:
+    sample = data[:4096]
+    null_ratio = sample.count(b"\x00") / len(sample)
+    if null_ratio > 0.2:
         return False
-    try:
-        sample.decode("utf-8")
-        return True
-    except UnicodeDecodeError:
-        return False
+    text_like = sum(32 <= b < 127 or b in (9, 10, 13) for b in sample)
+    return text_like / len(sample) > 0.45
+
+
+def _extract_printable_lines(data: bytes) -> str:
+    text = decode_bytes_auto(data)
+    lines = []
+    for line in text.splitlines():
+        clean = line.strip().replace("\x00", "")
+        if not clean:
+            continue
+        if any(ch.isalnum() for ch in clean) and ("=" in clean or ("[" in clean and "]" in clean)):
+            lines.append(clean)
+    return "\n".join(lines)
+
+
+def _parse_property_candidates(text: str) -> PropertyDocument | None:
+    doc = PropertyDocument.parse(text)
+    if doc.property_count() >= 2:
+        return doc
+    return None
+
+
+def parse_property_from_bytes(path: str, data: bytes) -> PropertyDocument | None:
+    text = decode_bytes_auto(data)
+    by_text = parse_property_document(path, text)
+    if by_text is not None and by_text.property_count() > 0:
+        return by_text
+
+    guessed = _extract_printable_lines(data)
+    if guessed:
+        return _parse_property_candidates(guessed)
+    return None
 
 
 def load_gim_package(path: str | Path) -> GimPackage:
     path = Path(path)
-
     if path.is_dir():
         files: dict[str, bytes] = {}
         for item in path.rglob("*"):
@@ -124,7 +163,6 @@ def load_gim_package(path: str | Path) -> GimPackage:
         return GimPackage(source=str(path), files=files)
 
     if path.is_file():
-        # 支持旧 JSON gim
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(payload, dict) and "layers" in payload:
@@ -138,7 +176,6 @@ def load_gim_package(path: str | Path) -> GimPackage:
                 files = {name: zf.read(name) for name in zf.namelist() if not name.endswith("/")}
             return GimPackage(source=str(path), files=files)
         except zipfile.BadZipFile:
-            # 不是 zip 时也能打开为单文件包，避免“file is not a file/zip”阻断
             return GimPackage(source=str(path), files={path.name: path.read_bytes()})
 
     raise FileNotFoundError(f"路径不存在或不可读取: {path}")
@@ -147,6 +184,8 @@ def load_gim_package(path: str | Path) -> GimPackage:
 def parse_property_document(path: str, text: str) -> PropertyDocument | None:
     ext = Path(path).suffix.lower()
     if ext in PROPERTY_EXTENSIONS:
+        return PropertyDocument.parse(text)
+    if "=" in text and ("[" in text and "]" in text):
         return PropertyDocument.parse(text)
     return None
 
@@ -191,7 +230,6 @@ def parse_obj_vertices_edges(text: str) -> tuple[list[tuple[float, float, float]
     return vertices, sorted(edges)
 
 
-# backward-compatible exports
 FamProperty = TextProperty
 FamSection = PropertySection
 FamDocument = PropertyDocument
@@ -201,18 +239,6 @@ FamDocument = PropertyDocument
 class Layer:
     id: str
     name: str
-    type: str = "group"
-    visible: bool = True
-    opacity: float = 1.0
-    x: float = 0.0
-    y: float = 0.0
-    width: float = 0.0
-    height: float = 0.0
-    rotation: float = 0.0
-    fill: str = "#808080"
-    text: str = ""
-    font_size: int = 14
-    children: list["Layer"] = field(default_factory=list)
 
 
 @dataclass

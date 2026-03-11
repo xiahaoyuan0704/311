@@ -11,6 +11,7 @@ from gim_desktop.model import (
     load_gim_package,
     parse_obj_vertices_edges,
     parse_property_document,
+    parse_property_from_bytes,
 )
 
 
@@ -146,7 +147,7 @@ class GimDesktopApp:
         self.prop_table.delete(*self.prop_table.get_children())
 
         if can_preview_as_text(path, data):
-            text = self.package.read_text(path)
+            text = self.package.read_text_auto(path)
             self.raw_text.delete("1.0", tk.END)
             self.raw_text.insert(tk.END, text)
             doc = parse_property_document(path, text)
@@ -159,11 +160,21 @@ class GimDesktopApp:
                 self.status_var.set(f"已预览文本: {path}")
             self.render_from_path(path, text)
         else:
-            self.current_doc = None
-            self.raw_text.delete("1.0", tk.END)
-            self.raw_text.insert(tk.END, f"二进制文件，大小: {len(data)} 字节")
-            self.render_from_binary(path, data)
-            self.status_var.set(f"已加载二进制文件: {path}")
+            doc = parse_property_from_bytes(path, data)
+            if doc is not None:
+                self.current_doc = doc
+                parsed_text = doc.to_text()
+                self.raw_text.delete("1.0", tk.END)
+                self.raw_text.insert(tk.END, parsed_text)
+                self.show_document(doc)
+                self.render_from_path(path, parsed_text)
+                self.status_var.set(f"已从二进制中提取属性: {path}")
+            else:
+                self.current_doc = None
+                self.raw_text.delete("1.0", tk.END)
+                self.raw_text.insert(tk.END, f"二进制文件，大小: {len(data)} 字节")
+                self.render_from_binary(path, data)
+                self.status_var.set(f"已加载二进制文件: {path}")
 
     def show_document(self, doc: PropertyDocument) -> None:
         self.prop_table.delete(*self.prop_table.get_children())

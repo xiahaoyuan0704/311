@@ -11,11 +11,13 @@ from gim_desktop.model import (
     PropertySection,
     TextProperty,
     can_preview_as_text,
+    decode_bytes_auto,
     flatten_layers,
     load_gim,
     load_gim_package,
     parse_obj_vertices_edges,
     parse_property_document,
+    parse_property_from_bytes,
     save_gim,
 )
 
@@ -34,6 +36,8 @@ __all__ = [
     "PropertySection",
     "PropertyDocument",
     "parse_property_document",
+    "parse_property_from_bytes",
     "can_preview_as_text",
+    "decode_bytes_auto",
     "parse_obj_vertices_edges",
 ]
