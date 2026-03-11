@@ -1,0 +1,58 @@
+{
+  "canvas": {
+    "width": 960,
+    "height": 540,
+    "background": "#202020"
+  },
+  "layers": [
+    {
+      "id": "bg-01",
+      "name": "背景矩形",
+      "type": "rect",
+      "visible": true,
+      "opacity": 1,
+      "x": 40,
+      "y": 40,
+      "width": 380,
+      "height": 220,
+      "rotation": 0,
+      "fill": "#2b8cff",
+      "text": "",
+      "font_size": 14,
+      "children": []
+    },
+    {
+      "id": "group-01",
+      "name": "文字组",
+      "type": "group",
+      "visible": true,
+      "opacity": 1,
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0,
+      "rotation": 0,
+      "fill": "#808080",
+      "text": "",
+      "font_size": 14,
+      "children": [
+        {
+          "id": "text-01",
+          "name": "标题",
+          "type": "text",
+          "visible": true,
+          "opacity": 1,
+          "x": 90,
+          "y": 130,
+          "width": 0,
+          "height": 0,
+          "rotation": 0,
+          "fill": "#ffffff",
+          "text": "GIM Viewer",
+          "font_size": 30,
+          "children": []
+        }
+      ]
+    }
+  ]
+}

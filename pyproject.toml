@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gim-desktop"
+version = "0.1.0"
+description = "Desktop GIM parser/viewer/editor"
+requires-python = ">=3.10"
+
+[project.scripts]
+gim-desktop = "gim_desktop.app:run"
