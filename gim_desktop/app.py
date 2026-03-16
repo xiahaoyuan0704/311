@@ -10,6 +10,8 @@ from gim_desktop.model import (
     can_preview_as_text,
     load_gim_package,
     parse_obj_vertices_edges,
+    parse_numeric_triplets,
+    parse_points_from_binary,
     parse_property_document,
     parse_property_from_bytes,
 )
@@ -169,7 +171,10 @@ class GimDesktopApp:
             else:
                 self.current_doc = None
                 self.status_var.set(f"已预览文本: {path}")
-            self.render_from_path(path, text)
+            if Path(path).suffix.lower() == ".mod":
+                self.render_mod(path, text, data)
+            else:
+                self.render_from_path(path, text)
         else:
             doc = parse_property_from_bytes(path, data)
             if doc is not None:
@@ -178,13 +183,19 @@ class GimDesktopApp:
                 self.raw_text.delete("1.0", tk.END)
                 self.raw_text.insert(tk.END, parsed_text)
                 self.show_document(doc)
-                self.render_from_path(path, parsed_text)
+                if Path(path).suffix.lower() == ".mod":
+                    self.render_mod(path, parsed_text, data)
+                else:
+                    self.render_from_path(path, parsed_text)
                 self.status_var.set(f"已从二进制中提取属性: {path}")
             else:
                 self.current_doc = None
                 self.raw_text.delete("1.0", tk.END)
                 self.raw_text.insert(tk.END, f"二进制文件，大小: {len(data)} 字节")
-                self.render_from_binary(path, data)
+                if Path(path).suffix.lower() == ".mod":
+                    self.render_mod(path, "", data)
+                else:
+                    self.render_from_binary(path, data)
                 self.status_var.set(f"已加载二进制文件: {path}")
 
     def show_document(self, doc: PropertyDocument) -> None:
@@ -301,19 +312,14 @@ class GimDesktopApp:
 
         self.render_canvas.create_text(90, 540, anchor=tk.NW, fill="#a7b7cd", text="说明：这是根据属性生成的设备示意渲染，用于桌面查看模型样式。")
 
-    def _render_mod_text(self, text: str) -> None:
+    def _render_mod_text(self, text: str) -> bool:
         vertices, edges = parse_obj_vertices_edges(text)
         if not vertices or not edges:
-            self.render_canvas.create_text(
-                30,
-                30,
-                anchor=tk.NW,
-                fill="#cfd8e3",
-                text=".mod 已打开，但不是 OBJ 网格文本；已回退到通用渲染。",
-            )
-            self.render_canvas.create_rectangle(120, 120, 560, 360, outline="#4d90fe", width=2)
-            self.render_canvas.create_text(340, 240, fill="#8fb4ff", text="MOD PREVIEW")
-            return
+            points = parse_numeric_triplets(text)
+            if points:
+                self._render_points_cloud(points, "MOD 数值点云渲染")
+                return True
+            return False
 
         xs = [v[0] for v in vertices]
         ys = [v[1] for v in vertices]
@@ -338,6 +344,46 @@ class GimDesktopApp:
                 self.render_canvas.create_line(x1, y1, x2, y2, fill="#7fc0ff", width=1)
 
         self.render_canvas.create_text(20, 20, anchor=tk.NW, fill="#d7e4f5", text=f"OBJ样式渲染: 顶点{len(vertices)} 边{len(edges)}")
+        return True
+
+    def _render_points_cloud(self, points: list[tuple[float, float, float]], title: str) -> None:
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        w = max(1e-6, max_x - min_x)
+        h = max(1e-6, max_y - min_y)
+        canvas_w = max(self.render_canvas.winfo_width(), 900)
+        canvas_h = max(self.render_canvas.winfo_height(), 600)
+        scale = min((canvas_w - 120) / w, (canvas_h - 120) / h)
+
+        step = max(1, len(points) // 3000)
+        for idx in range(0, len(points), step):
+            x, y, _z = points[idx]
+            sx = 60 + (x - min_x) * scale
+            sy = 60 + (y - min_y) * scale
+            self.render_canvas.create_oval(sx - 1, sy - 1, sx + 1, sy + 1, outline="", fill="#7fc0ff")
+
+        self.render_canvas.create_text(20, 20, anchor=tk.NW, fill="#d7e4f5", text=f"{title}: 点数{len(points)}")
+
+    def render_mod(self, path: str, text: str, data: bytes) -> None:
+        self.render_canvas.delete("all")
+        if text:
+            if self._render_mod_text(text):
+                return
+
+        pts = parse_points_from_binary(data)
+        if pts:
+            self._render_points_cloud(pts, "MOD 二进制点云渲染")
+        else:
+            self.render_canvas.create_text(
+                30,
+                30,
+                anchor=tk.NW,
+                fill="#cfd8e3",
+                text=".mod 已打开，未识别出 OBJ/数值点云，显示二进制占位预览。",
+            )
+            self.render_from_binary(path, data)
 
 
 def run() -> None:

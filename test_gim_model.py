@@ -8,6 +8,8 @@ from gim_desktop.model import (
     decode_bytes_auto,
     load_gim_package,
     parse_obj_vertices_edges,
+    parse_numeric_triplets,
+    parse_points_from_binary,
     parse_property_document,
     parse_property_from_bytes,
 )
@@ -48,6 +50,18 @@ class GimPackageTests(unittest.TestCase):
             pkg.save_as_gim_zip(out)
             with zipfile.ZipFile(out, "r") as zf:
                 self.assertIn("DEV/node.fam", zf.namelist())
+
+
+    def test_mod_numeric_triplets_parse(self) -> None:
+        text = "pt 1,2,3\npt 4 5 6\n"
+        pts = parse_numeric_triplets(text)
+        self.assertEqual(len(pts), 2)
+
+    def test_mod_binary_points_parse(self) -> None:
+        import struct
+        data = struct.pack("<ffffff", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+        pts = parse_points_from_binary(data)
+        self.assertGreaterEqual(len(pts), 1)
 
     def test_obj_parse_for_render(self) -> None:
         obj = """v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3 4\n"""

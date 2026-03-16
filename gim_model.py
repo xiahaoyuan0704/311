@@ -16,6 +16,8 @@ from gim_desktop.model import (
     load_gim,
     load_gim_package,
     parse_obj_vertices_edges,
+    parse_numeric_triplets,
+    parse_points_from_binary,
     parse_property_document,
     parse_property_from_bytes,
     save_gim,
@@ -40,4 +42,6 @@ __all__ = [
     "can_preview_as_text",
     "decode_bytes_auto",
     "parse_obj_vertices_edges",
+    "parse_numeric_triplets",
+    "parse_points_from_binary",
 ]

@@ -7,6 +7,7 @@ import json
 import lzma
 from pathlib import Path
 import re
+import struct
 import string
 import zlib
 import zipfile
@@ -330,6 +331,52 @@ def parse_obj_vertices_edges(text: str) -> tuple[list[tuple[float, float, float]
                     edges.add(tuple(sorted((a, b))))
 
     return vertices, sorted(edges)
+
+
+def parse_numeric_triplets(text: str) -> list[tuple[float, float, float]]:
+    """Try to parse generic numeric xyz points from non-OBJ .mod text."""
+
+    pts: list[tuple[float, float, float]] = []
+    for raw in text.splitlines():
+        line = raw.strip().replace(",", " ").replace(";", " ")
+        if not line:
+            continue
+        numbers = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", line)
+        if len(numbers) >= 3:
+            try:
+                x, y, z = float(numbers[0]), float(numbers[1]), float(numbers[2])
+            except ValueError:
+                continue
+            pts.append((x, y, z))
+        if len(pts) >= 5000:
+            break
+    return pts
+
+
+def parse_points_from_binary(data: bytes) -> list[tuple[float, float, float]]:
+    """Extract plausible xyz points from binary payload by float scanning."""
+
+    pts: list[tuple[float, float, float]] = []
+    if len(data) < 12:
+        return pts
+
+    # sample first chunk to avoid huge scans
+    chunk = data[: min(len(data), 512 * 1024)]
+    max_abs = 1e7
+    for i in range(0, len(chunk) - 12, 4):
+        try:
+            x, y, z = struct.unpack_from("<fff", chunk, i)
+        except struct.error:
+            continue
+        if not all(v == v and abs(v) < max_abs for v in (x, y, z)):  # NaN check + range
+            continue
+        # skip near-zero noise
+        if abs(x) + abs(y) + abs(z) < 1e-8:
+            continue
+        pts.append((x, y, z))
+        if len(pts) >= 4000:
+            break
+    return pts
 
 
 FamProperty = TextProperty
