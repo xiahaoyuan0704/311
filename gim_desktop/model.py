@@ -417,20 +417,29 @@ def parse_points_from_binary(data: bytes) -> list[tuple[float, float, float]]:
     return pts
 
 
-def find_related_mod_path(current_path: str, file_paths: list[str]) -> str | None:
+def _extract_candidate_tokens(text: str) -> list[str]:
+    tokens = set()
+    for token in re.findall(r"[A-Za-z0-9_-]{8,}", text):
+        tokens.add(token.lower())
+    return sorted(tokens, key=len, reverse=True)
+
+
+def find_related_mod_path(current_path: str, file_paths: list[str], hint_text: str = "") -> str | None:
     current = Path(current_path)
     stem = current.stem.lower()
+    hint_tokens = _extract_candidate_tokens(hint_text)
+    stem_tokens = _extract_candidate_tokens(current.stem)
 
     exact_candidates: list[str] = []
-    fallback_candidates: list[str] = []
+    mod_candidates: list[str] = []
+    token_scored: list[tuple[int, str]] = []
     for path in file_paths:
         p = Path(path)
         if p.suffix.lower() != ".mod":
             continue
+        mod_candidates.append(path)
         if p.stem.lower() == stem:
             exact_candidates.append(path)
-        elif p.parent.name.upper() == "MOD":
-            fallback_candidates.append(path)
 
     if exact_candidates:
         preferred = sorted(
@@ -438,6 +447,34 @@ def find_related_mod_path(current_path: str, file_paths: list[str]) -> str | Non
             key=lambda item: (0 if Path(item).parent.name.upper() == "MOD" else 1, len(item)),
         )
         return preferred[0]
+
+    # 从属性文本中找可能的模型路径/ID
+    hint_mods = re.findall(r"([A-Za-z0-9_/\-]+\.mod)", hint_text, flags=re.IGNORECASE)
+    if hint_mods:
+        for hinted in hint_mods:
+            hinted_name = Path(hinted).name.lower()
+            for candidate in mod_candidates:
+                if Path(candidate).name.lower() == hinted_name:
+                    return candidate
+
+    # 依据 UUID / 长 token 对 MOD 路径打分
+    all_tokens = hint_tokens + stem_tokens
+    if all_tokens:
+        for candidate in mod_candidates:
+            hay = candidate.lower()
+            score = 0
+            for token in all_tokens[:8]:
+                if token in hay:
+                    score += len(token)
+            if score > 0:
+                token_scored.append((score, candidate))
+        if token_scored:
+            token_scored.sort(key=lambda item: (-item[0], len(item[1])))
+            return token_scored[0][1]
+
+    # 只有一个模型时直接返回
+    if len(mod_candidates) == 1:
+        return mod_candidates[0]
 
     if current.suffix.lower() == ".mod":
         return current_path

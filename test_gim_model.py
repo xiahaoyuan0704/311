@@ -62,6 +62,10 @@ class GimPackageTests(unittest.TestCase):
             "PHM/abc.phm",
         ]
         self.assertEqual(find_related_mod_path("CBM/abc.fam", paths), "MOD/abc.mod")
+        self.assertEqual(
+            find_related_mod_path("DEV/node_x.fam", paths, hint_text="ModelFile=abc.mod"),
+            "MOD/abc.mod",
+        )
 
 
     def test_mod_numeric_triplets_parse(self) -> None:

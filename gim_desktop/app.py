@@ -217,7 +217,7 @@ class GimDesktopApp:
             return
 
         if self.package is not None:
-            related_mod = find_related_mod_path(path, self.package.file_paths())
+            related_mod = find_related_mod_path(path, self.package.file_paths(), hint_text=text)
             if related_mod is not None:
                 mod_data = self.package.read_bytes(related_mod)
                 mod_text = self.package.read_text_auto(related_mod) if can_preview_as_text(related_mod, mod_data) else ""
