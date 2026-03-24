@@ -6,6 +6,7 @@ import zipfile
 from gim_desktop.model import (
     can_preview_as_text,
     decode_bytes_auto,
+    find_related_mod_path,
     load_gim_package,
     parse_obj_vertices_edges,
     parse_numeric_triplets,
@@ -50,6 +51,15 @@ class GimPackageTests(unittest.TestCase):
             pkg.save_as_gim_zip(out)
             with zipfile.ZipFile(out, "r") as zf:
                 self.assertIn("DEV/node.fam", zf.namelist())
+
+    def test_find_related_mod_path(self) -> None:
+        paths = [
+            "CBM/abc.fam",
+            "DEV/abc.dev",
+            "MOD/abc.mod",
+            "PHM/abc.phm",
+        ]
+        self.assertEqual(find_related_mod_path("CBM/abc.fam", paths), "MOD/abc.mod")
 
 
     def test_mod_numeric_triplets_parse(self) -> None:

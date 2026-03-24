@@ -379,6 +379,34 @@ def parse_points_from_binary(data: bytes) -> list[tuple[float, float, float]]:
     return pts
 
 
+def find_related_mod_path(current_path: str, file_paths: list[str]) -> str | None:
+    current = Path(current_path)
+    stem = current.stem.lower()
+
+    exact_candidates: list[str] = []
+    fallback_candidates: list[str] = []
+    for path in file_paths:
+        p = Path(path)
+        if p.suffix.lower() != ".mod":
+            continue
+        if p.stem.lower() == stem:
+            exact_candidates.append(path)
+        elif p.parent.name.upper() == "MOD":
+            fallback_candidates.append(path)
+
+    if exact_candidates:
+        preferred = sorted(
+            exact_candidates,
+            key=lambda item: (0 if Path(item).parent.name.upper() == "MOD" else 1, len(item)),
+        )
+        return preferred[0]
+
+    if current.suffix.lower() == ".mod":
+        return current_path
+
+    return None
+
+
 FamProperty = TextProperty
 FamSection = PropertySection
 FamDocument = PropertyDocument

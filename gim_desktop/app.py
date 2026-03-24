@@ -8,6 +8,7 @@ from gim_desktop.model import (
     GimPackage,
     PropertyDocument,
     can_preview_as_text,
+    find_related_mod_path,
     load_gim_package,
     parse_obj_vertices_edges,
     parse_numeric_triplets,
@@ -171,10 +172,7 @@ class GimDesktopApp:
             else:
                 self.current_doc = None
                 self.status_var.set(f"已预览文本: {path}")
-            if Path(path).suffix.lower() == ".mod":
-                self.render_mod(path, text, data)
-            else:
-                self.render_from_path(path, text)
+            self.render_for_selection(path, text, data)
         else:
             doc = parse_property_from_bytes(path, data)
             if doc is not None:
@@ -183,20 +181,34 @@ class GimDesktopApp:
                 self.raw_text.delete("1.0", tk.END)
                 self.raw_text.insert(tk.END, parsed_text)
                 self.show_document(doc)
-                if Path(path).suffix.lower() == ".mod":
-                    self.render_mod(path, parsed_text, data)
-                else:
-                    self.render_from_path(path, parsed_text)
+                self.render_for_selection(path, parsed_text, data)
                 self.status_var.set(f"已从二进制中提取属性: {path}")
             else:
                 self.current_doc = None
                 self.raw_text.delete("1.0", tk.END)
                 self.raw_text.insert(tk.END, f"二进制文件，大小: {len(data)} 字节")
-                if Path(path).suffix.lower() == ".mod":
-                    self.render_mod(path, "", data)
-                else:
-                    self.render_from_binary(path, data)
+                self.render_for_selection(path, "", data)
                 self.status_var.set(f"已加载二进制文件: {path}")
+
+    def render_for_selection(self, path: str, text: str, data: bytes) -> None:
+        ext = Path(path).suffix.lower()
+        if ext == ".mod":
+            self.render_mod(path, text, data)
+            return
+
+        if self.package is not None:
+            related_mod = find_related_mod_path(path, self.package.file_paths())
+            if related_mod is not None:
+                mod_data = self.package.read_bytes(related_mod)
+                mod_text = self.package.read_text_auto(related_mod) if can_preview_as_text(related_mod, mod_data) else ""
+                self.render_mod(related_mod, mod_text, mod_data)
+                self.status_var.set(f"已解析属性文件: {path}，并关联渲染模型: {related_mod}")
+                return
+
+        if text:
+            self.render_from_path(path, text)
+        else:
+            self.render_from_binary(path, data)
 
     def show_document(self, doc: PropertyDocument) -> None:
         self.prop_table.delete(*self.prop_table.get_children())
@@ -249,7 +261,7 @@ class GimDesktopApp:
         self.package.write_text(self.current_path, new_text)
         self.raw_text.delete("1.0", tk.END)
         self.raw_text.insert(tk.END, new_text)
-        self.render_from_path(self.current_path, new_text)
+        self.render_for_selection(self.current_path, new_text, self.package.read_bytes(self.current_path))
         self.status_var.set(f"已修改并写回: {self.current_path}")
 
     def save_current_text(self) -> None:
