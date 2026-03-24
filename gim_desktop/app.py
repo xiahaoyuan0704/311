@@ -29,6 +29,7 @@ class GimDesktopApp:
         self.package: GimPackage | None = None
         self.current_doc: PropertyDocument | None = None
         self.current_path: str | None = None
+        self.manual_mod_map: dict[str, str] = {}
 
         self.status_var = tk.StringVar(value="请选择 .gim 文件或解压目录")
         self.render_mode_var = tk.StringVar(value="自动")
@@ -44,6 +45,7 @@ class GimDesktopApp:
 
         ttk.Button(toolbar, text="打开 .gim", command=self.open_gim_file).pack(side=tk.LEFT, padx=4)
         ttk.Button(toolbar, text="打开目录", command=self.open_gim_directory).pack(side=tk.LEFT, padx=4)
+        ttk.Button(toolbar, text="手动关联MOD", command=self.bind_mod_for_current).pack(side=tk.LEFT, padx=4)
         ttk.Button(toolbar, text="保存当前属性文件", command=self.save_current_text).pack(side=tk.LEFT, padx=4)
         ttk.Button(toolbar, text="导出 .gim(zip)", command=self.export_gim_zip).pack(side=tk.LEFT, padx=4)
         ttk.Label(toolbar, text="渲染模式").pack(side=tk.LEFT, padx=(12, 2))
@@ -123,6 +125,7 @@ class GimDesktopApp:
             messagebox.showerror("打开失败", str(exc))
             return
         self.status_var.set(f"已加载: {path}")
+        self.manual_mod_map.clear()
         self.rebuild_tree()
         self.clear_detail()
 
@@ -217,6 +220,14 @@ class GimDesktopApp:
             return
 
         if self.package is not None:
+            manual = self.manual_mod_map.get(path)
+            if manual in self.package.files:
+                manual_data = self.package.read_bytes(manual)
+                manual_text = self.package.read_text_auto(manual) if can_preview_as_text(manual, manual_data) else ""
+                self.render_mod(manual, manual_text, manual_data)
+                self.status_var.set(f"已手动关联渲染: {path} -> {manual}")
+                return
+
             related_mod = find_related_mod_path(path, self.package.file_paths(), hint_text=text)
             if related_mod is not None:
                 mod_data = self.package.read_bytes(related_mod)
@@ -224,11 +235,52 @@ class GimDesktopApp:
                 self.render_mod(related_mod, mod_text, mod_data)
                 self.status_var.set(f"已解析属性文件: {path}，并关联渲染模型: {related_mod}")
                 return
+            self.status_var.set(f"未自动匹配到MOD，可点“手动关联MOD”: {path}")
 
         if text:
             self.render_from_path(path, text)
         else:
             self.render_from_binary(path, data)
+
+    def bind_mod_for_current(self) -> None:
+        if not self.package or not self.current_path:
+            messagebox.showwarning("提示", "请先选择一个属性文件")
+            return
+        if Path(self.current_path).suffix.lower() == ".mod":
+            messagebox.showinfo("提示", "当前已是 .mod 文件，无需手动关联")
+            return
+
+        mod_paths = [p for p in self.package.file_paths() if Path(p).suffix.lower() == ".mod"]
+        if not mod_paths:
+            messagebox.showwarning("提示", "当前包中没有找到 .mod 文件")
+            return
+
+        picker = tk.Toplevel(self.root)
+        picker.title("选择关联的 MOD 文件")
+        picker.geometry("760x460")
+        ttk.Label(picker, text=f"为 {self.current_path} 选择一个 .mod").pack(anchor="w", padx=8, pady=(8, 4))
+
+        listbox = tk.Listbox(picker)
+        listbox.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        for p in mod_paths:
+            listbox.insert(tk.END, p)
+
+        def on_confirm() -> None:
+            sel = listbox.curselection()
+            if not sel:
+                return
+            selected_mod = mod_paths[sel[0]]
+            self.manual_mod_map[self.current_path or ""] = selected_mod
+            picker.destroy()
+            data = self.package.read_bytes(self.current_path) if self.current_path else b""
+            text = self.package.read_text_auto(self.current_path) if self.current_path and can_preview_as_text(self.current_path, data) else ""
+            if self.current_path:
+                self.render_for_selection(self.current_path, text, data)
+
+        btns = ttk.Frame(picker)
+        btns.pack(fill=tk.X, padx=8, pady=(0, 8))
+        ttk.Button(btns, text="关联并渲染", command=on_confirm).pack(side=tk.RIGHT)
+        ttk.Button(btns, text="取消", command=picker.destroy).pack(side=tk.RIGHT, padx=6)
 
     def show_document(self, doc: PropertyDocument) -> None:
         self.prop_table.delete(*self.prop_table.get_children())
