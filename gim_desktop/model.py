@@ -407,6 +407,24 @@ def find_related_mod_path(current_path: str, file_paths: list[str]) -> str | Non
     return None
 
 
+def infer_device_kind(flat_props: dict[str, str]) -> str:
+    """Infer coarse device type from property keys/values for single-line style rendering."""
+    samples: list[str] = []
+    for key, value in flat_props.items():
+        samples.append(f"{key}={value}")
+    joined = " ".join(samples).lower()
+
+    if any(token in joined for token in ("断路器", "breaker", "cb")):
+        return "breaker"
+    if any(token in joined for token in ("隔离", "disconnector", "隔离开关")):
+        return "disconnector"
+    if any(token in joined for token in ("变压器", "transformer", "主变")):
+        return "transformer"
+    if any(token in joined for token in ("线路", "line", "馈线", "电缆")):
+        return "line"
+    return "generic"
+
+
 FamProperty = TextProperty
 FamSection = PropertySection
 FamDocument = PropertyDocument

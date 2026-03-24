@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -15,6 +16,7 @@ from gim_desktop.model import (
     parse_points_from_binary,
     parse_property_document,
     parse_property_from_bytes,
+    infer_device_kind,
 )
 
 
@@ -29,6 +31,7 @@ class GimDesktopApp:
         self.current_path: str | None = None
 
         self.status_var = tk.StringVar(value="请选择 .gim 文件或解压目录")
+        self.render_mode_var = tk.StringVar(value="自动")
         self.key_var = tk.StringVar()
         self.label_var = tk.StringVar()
         self.value_var = tk.StringVar()
@@ -43,6 +46,16 @@ class GimDesktopApp:
         ttk.Button(toolbar, text="打开目录", command=self.open_gim_directory).pack(side=tk.LEFT, padx=4)
         ttk.Button(toolbar, text="保存当前属性文件", command=self.save_current_text).pack(side=tk.LEFT, padx=4)
         ttk.Button(toolbar, text="导出 .gim(zip)", command=self.export_gim_zip).pack(side=tk.LEFT, padx=4)
+        ttk.Label(toolbar, text="渲染模式").pack(side=tk.LEFT, padx=(12, 2))
+        mode_box = ttk.Combobox(
+            toolbar,
+            textvariable=self.render_mode_var,
+            values=["自动", "设备单线图", "3D线框"],
+            width=12,
+            state="readonly",
+        )
+        mode_box.pack(side=tk.LEFT, padx=4)
+        mode_box.bind("<<ComboboxSelected>>", self.on_render_mode_changed)
         ttk.Label(toolbar, textvariable=self.status_var).pack(side=tk.RIGHT, padx=8)
 
         main = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
@@ -145,6 +158,13 @@ class GimDesktopApp:
         self.prop_table.delete(*self.prop_table.get_children())
         self.raw_text.delete("1.0", tk.END)
         self.render_canvas.delete("all")
+
+    def on_render_mode_changed(self, _event: tk.Event) -> None:
+        if not self.package or not self.current_path:
+            return
+        data = self.package.read_bytes(self.current_path)
+        text = self.package.read_text_auto(self.current_path) if can_preview_as_text(self.current_path, data) else ""
+        self.render_for_selection(self.current_path, text, data)
 
     def on_select_file(self, _event: tk.Event) -> None:
         if not self.package:
@@ -310,19 +330,95 @@ class GimDesktopApp:
         voltage = flat.get("VoltageLevel") or flat.get("电压等级") or "10"
         name = flat.get("工程中名称") or flat.get("name") or flat.get("设备名称") or "设备"
         code = flat.get("电网工程标识系统编码") or flat.get("调度编码") or "N/A"
+        kind = infer_device_kind(flat)
+        mode = self.render_mode_var.get()
+        canvas_w = max(self.render_canvas.winfo_width(), 960)
+        canvas_h = max(self.render_canvas.winfo_height(), 560)
 
-        self.render_canvas.create_rectangle(70, 80, 980, 520, fill="#16212d", outline="#355a83", width=2)
-        self.render_canvas.create_text(90, 105, anchor=tk.NW, fill="#f5f7fa", font=("Arial", 16, "bold"), text=name)
-        self.render_canvas.create_text(90, 135, anchor=tk.NW, fill="#b8c5d8", text=f"编码: {code}")
-        self.render_canvas.create_text(90, 160, anchor=tk.NW, fill="#ffd66b", text=f"电压等级: {voltage} kV")
+        self.render_canvas.create_rectangle(40, 40, canvas_w - 40, canvas_h - 40, fill="#16212d", outline="#355a83", width=2)
+        self.render_canvas.create_text(70, 70, anchor=tk.NW, fill="#f5f7fa", font=("Arial", 16, "bold"), text=name)
+        self.render_canvas.create_text(70, 102, anchor=tk.NW, fill="#b8c5d8", text=f"编码: {code}")
+        self.render_canvas.create_text(70, 126, anchor=tk.NW, fill="#ffd66b", text=f"电压等级: {voltage} kV")
+        self.render_canvas.create_text(70, 150, anchor=tk.NW, fill="#9dc5ff", text=f"设备类型推断: {kind}")
 
-        self.render_canvas.create_line(120, 320, 900, 320, fill="#ffcc33", width=8)
-        for x in (220, 380, 540, 700, 860):
-            self.render_canvas.create_oval(x - 22, 298, x + 22, 342, fill="#2f88ff", outline="")
-            self.render_canvas.create_line(x, 342, x, 430, fill="#80b6ff", width=3)
-            self.render_canvas.create_rectangle(x - 34, 430, x + 34, 470, fill="#204a7a", outline="#77a9e8")
+        bus_y = canvas_h * 0.42
+        self.render_canvas.create_line(120, bus_y, canvas_w - 120, bus_y, fill="#ffcc33", width=8)
+        node_x = [canvas_w * 0.27, canvas_w * 0.5, canvas_w * 0.73]
+        for x in node_x:
+            self.render_canvas.create_oval(x - 13, bus_y - 13, x + 13, bus_y + 13, fill="#2f88ff", outline="")
+            self.render_canvas.create_line(x, bus_y + 14, x, bus_y + 84, fill="#80b6ff", width=3)
 
-        self.render_canvas.create_text(90, 540, anchor=tk.NW, fill="#a7b7cd", text="说明：这是根据属性生成的设备示意渲染，用于桌面查看模型样式。")
+        symbol_y = bus_y + 104
+        if kind == "breaker":
+            self._draw_breaker_symbol(node_x[1], symbol_y)
+        elif kind == "disconnector":
+            self._draw_disconnector_symbol(node_x[1], symbol_y)
+        elif kind == "transformer":
+            self._draw_transformer_symbol(node_x[1], symbol_y)
+        elif kind == "line":
+            self._draw_line_symbol(node_x[1], symbol_y)
+        else:
+            self._draw_generic_symbol(node_x[1], symbol_y)
+
+        style_tip = "当前为设备单线图风格渲染。"
+        if mode == "3D线框":
+            style_tip = "已切换 3D 线框优先；属性文件仍显示单线图语义。"
+        self.render_canvas.create_text(70, canvas_h - 70, anchor=tk.NW, fill="#a7b7cd", text=f"说明：{style_tip}")
+
+    def _draw_breaker_symbol(self, cx: float, cy: float) -> None:
+        self.render_canvas.create_rectangle(cx - 44, cy - 22, cx + 44, cy + 22, outline="#77a9e8", width=2, fill="#204a7a")
+        self.render_canvas.create_line(cx - 30, cy + 14, cx + 30, cy - 14, fill="#eaf2ff", width=2)
+        self.render_canvas.create_text(cx, cy + 36, fill="#cfe2ff", text="断路器")
+
+    def _draw_disconnector_symbol(self, cx: float, cy: float) -> None:
+        self.render_canvas.create_line(cx - 44, cy, cx + 44, cy, fill="#77a9e8", width=4)
+        self.render_canvas.create_line(cx - 8, cy - 20, cx + 30, cy - 2, fill="#eaf2ff", width=3)
+        self.render_canvas.create_text(cx, cy + 32, fill="#cfe2ff", text="隔离开关")
+
+    def _draw_transformer_symbol(self, cx: float, cy: float) -> None:
+        self.render_canvas.create_oval(cx - 36, cy - 22, cx - 4, cy + 22, outline="#77a9e8", width=3)
+        self.render_canvas.create_oval(cx + 4, cy - 22, cx + 36, cy + 22, outline="#77a9e8", width=3)
+        self.render_canvas.create_text(cx, cy + 36, fill="#cfe2ff", text="变压器")
+
+    def _draw_line_symbol(self, cx: float, cy: float) -> None:
+        self.render_canvas.create_line(cx - 54, cy - 20, cx + 54, cy + 20, fill="#80b6ff", width=3)
+        self.render_canvas.create_line(cx - 54, cy + 20, cx + 54, cy - 20, fill="#80b6ff", width=3)
+        self.render_canvas.create_text(cx, cy + 38, fill="#cfe2ff", text="线路端")
+
+    def _draw_generic_symbol(self, cx: float, cy: float) -> None:
+        self.render_canvas.create_rectangle(cx - 28, cy - 28, cx + 28, cy + 28, outline="#77a9e8", width=2)
+        self.render_canvas.create_text(cx, cy + 40, fill="#cfe2ff", text="通用设备")
+
+    @staticmethod
+    def _project_point(x: float, y: float, z: float) -> tuple[float, float]:
+        yaw = math.radians(35)
+        pitch = math.radians(25)
+        cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+        cos_pitch, sin_pitch = math.cos(pitch), math.sin(pitch)
+
+        x1 = x * cos_yaw + z * sin_yaw
+        z1 = -x * sin_yaw + z * cos_yaw
+        y1 = y * cos_pitch - z1 * sin_pitch
+        return x1, y1
+
+    def _project_points_fit(self, points: list[tuple[float, float, float]]) -> tuple[list[tuple[float, float]], float]:
+        projected = [self._project_point(x, y, z) for x, y, z in points]
+        xs = [p[0] for p in projected]
+        ys = [p[1] for p in projected]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        w = max(1e-6, max_x - min_x)
+        h = max(1e-6, max_y - min_y)
+        canvas_w = max(self.render_canvas.winfo_width(), 900)
+        canvas_h = max(self.render_canvas.winfo_height(), 600)
+        scale = min((canvas_w - 120) / w, (canvas_h - 120) / h)
+
+        fitted: list[tuple[float, float]] = []
+        for px, py in projected:
+            sx = 60 + (px - min_x) * scale
+            sy = 60 + (py - min_y) * scale
+            fitted.append((sx, sy))
+        return fitted, scale
 
     def _render_mod_text(self, text: str) -> bool:
         vertices, edges = parse_obj_vertices_edges(text)
@@ -333,47 +429,32 @@ class GimDesktopApp:
                 return True
             return False
 
-        xs = [v[0] for v in vertices]
-        ys = [v[1] for v in vertices]
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
-        w = max(1e-6, max_x - min_x)
-        h = max(1e-6, max_y - min_y)
-        canvas_w = max(self.render_canvas.winfo_width(), 900)
-        canvas_h = max(self.render_canvas.winfo_height(), 600)
-        scale = min((canvas_w - 120) / w, (canvas_h - 120) / h)
-
-        projected: list[tuple[float, float]] = []
-        for x, y, _z in vertices:
-            sx = 60 + (x - min_x) * scale
-            sy = 60 + (y - min_y) * scale
-            projected.append((sx, sy))
+        projected, scale = self._project_points_fit(vertices)
+        mode = self.render_mode_var.get()
 
         for a, b in edges:
             if a < len(projected) and b < len(projected):
                 x1, y1 = projected[a]
                 x2, y2 = projected[b]
-                self.render_canvas.create_line(x1, y1, x2, y2, fill="#7fc0ff", width=1)
+                width = 2 if mode == "3D线框" else 1
+                color = "#8ad4ff" if mode == "3D线框" else "#7fc0ff"
+                self.render_canvas.create_line(x1, y1, x2, y2, fill=color, width=width)
 
-        self.render_canvas.create_text(20, 20, anchor=tk.NW, fill="#d7e4f5", text=f"OBJ样式渲染: 顶点{len(vertices)} 边{len(edges)}")
+        self.render_canvas.create_text(
+            20,
+            20,
+            anchor=tk.NW,
+            fill="#d7e4f5",
+            text=f"OBJ 3D线框渲染: 顶点{len(vertices)} 边{len(edges)} 缩放{scale:.2f}",
+        )
         return True
 
     def _render_points_cloud(self, points: list[tuple[float, float, float]], title: str) -> None:
-        xs = [p[0] for p in points]
-        ys = [p[1] for p in points]
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
-        w = max(1e-6, max_x - min_x)
-        h = max(1e-6, max_y - min_y)
-        canvas_w = max(self.render_canvas.winfo_width(), 900)
-        canvas_h = max(self.render_canvas.winfo_height(), 600)
-        scale = min((canvas_w - 120) / w, (canvas_h - 120) / h)
+        projected, _scale = self._project_points_fit(points)
 
         step = max(1, len(points) // 3000)
         for idx in range(0, len(points), step):
-            x, y, _z = points[idx]
-            sx = 60 + (x - min_x) * scale
-            sy = 60 + (y - min_y) * scale
+            sx, sy = projected[idx]
             self.render_canvas.create_oval(sx - 1, sy - 1, sx + 1, sy + 1, outline="", fill="#7fc0ff")
 
         self.render_canvas.create_text(20, 20, anchor=tk.NW, fill="#d7e4f5", text=f"{title}: 点数{len(points)}")

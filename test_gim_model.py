@@ -6,6 +6,7 @@ import zipfile
 from gim_desktop.model import (
     can_preview_as_text,
     decode_bytes_auto,
+    infer_device_kind,
     find_related_mod_path,
     load_gim_package,
     parse_obj_vertices_edges,
@@ -88,6 +89,11 @@ class GimPackageTests(unittest.TestCase):
         text, enc = decode_bytes_auto(raw)
         self.assertIn("电压等级", text)
         self.assertTrue(enc)
+
+    def test_infer_device_kind(self) -> None:
+        self.assertEqual(infer_device_kind({"设备类型": "断路器"}), "breaker")
+        self.assertEqual(infer_device_kind({"name": "1#主变"}), "transformer")
+        self.assertEqual(infer_device_kind({"desc": "10kV 馈线间隔"}), "line")
 
 
 if __name__ == "__main__":
