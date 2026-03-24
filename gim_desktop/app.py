@@ -16,7 +16,6 @@ from gim_desktop.model import (
     parse_points_from_binary,
     parse_property_document,
     parse_property_from_bytes,
-    infer_device_kind,
 )
 
 
@@ -50,7 +49,7 @@ class GimDesktopApp:
         mode_box = ttk.Combobox(
             toolbar,
             textvariable=self.render_mode_var,
-            values=["自动", "设备单线图", "3D线框"],
+            values=["自动", "3D线框", "3D点云"],
             width=12,
             state="readonly",
         )
@@ -330,64 +329,38 @@ class GimDesktopApp:
         voltage = flat.get("VoltageLevel") or flat.get("电压等级") or "10"
         name = flat.get("工程中名称") or flat.get("name") or flat.get("设备名称") or "设备"
         code = flat.get("电网工程标识系统编码") or flat.get("调度编码") or "N/A"
-        kind = infer_device_kind(flat)
-        mode = self.render_mode_var.get()
         canvas_w = max(self.render_canvas.winfo_width(), 960)
         canvas_h = max(self.render_canvas.winfo_height(), 560)
-
-        self.render_canvas.create_rectangle(40, 40, canvas_w - 40, canvas_h - 40, fill="#16212d", outline="#355a83", width=2)
+        self.render_canvas.create_rectangle(40, 40, canvas_w - 40, canvas_h - 40, fill="#121821", outline="#355a83", width=2)
         self.render_canvas.create_text(70, 70, anchor=tk.NW, fill="#f5f7fa", font=("Arial", 16, "bold"), text=name)
         self.render_canvas.create_text(70, 102, anchor=tk.NW, fill="#b8c5d8", text=f"编码: {code}")
         self.render_canvas.create_text(70, 126, anchor=tk.NW, fill="#ffd66b", text=f"电压等级: {voltage} kV")
-        self.render_canvas.create_text(70, 150, anchor=tk.NW, fill="#9dc5ff", text=f"设备类型推断: {kind}")
 
-        bus_y = canvas_h * 0.42
-        self.render_canvas.create_line(120, bus_y, canvas_w - 120, bus_y, fill="#ffcc33", width=8)
-        node_x = [canvas_w * 0.27, canvas_w * 0.5, canvas_w * 0.73]
-        for x in node_x:
-            self.render_canvas.create_oval(x - 13, bus_y - 13, x + 13, bus_y + 13, fill="#2f88ff", outline="")
-            self.render_canvas.create_line(x, bus_y + 14, x, bus_y + 84, fill="#80b6ff", width=3)
-
-        symbol_y = bus_y + 104
-        if kind == "breaker":
-            self._draw_breaker_symbol(node_x[1], symbol_y)
-        elif kind == "disconnector":
-            self._draw_disconnector_symbol(node_x[1], symbol_y)
-        elif kind == "transformer":
-            self._draw_transformer_symbol(node_x[1], symbol_y)
-        elif kind == "line":
-            self._draw_line_symbol(node_x[1], symbol_y)
-        else:
-            self._draw_generic_symbol(node_x[1], symbol_y)
-
-        style_tip = "当前为设备单线图风格渲染。"
-        if mode == "3D线框":
-            style_tip = "已切换 3D 线框优先；属性文件仍显示单线图语义。"
-        self.render_canvas.create_text(70, canvas_h - 70, anchor=tk.NW, fill="#a7b7cd", text=f"说明：{style_tip}")
-
-    def _draw_breaker_symbol(self, cx: float, cy: float) -> None:
-        self.render_canvas.create_rectangle(cx - 44, cy - 22, cx + 44, cy + 22, outline="#77a9e8", width=2, fill="#204a7a")
-        self.render_canvas.create_line(cx - 30, cy + 14, cx + 30, cy - 14, fill="#eaf2ff", width=2)
-        self.render_canvas.create_text(cx, cy + 36, fill="#cfe2ff", text="断路器")
-
-    def _draw_disconnector_symbol(self, cx: float, cy: float) -> None:
-        self.render_canvas.create_line(cx - 44, cy, cx + 44, cy, fill="#77a9e8", width=4)
-        self.render_canvas.create_line(cx - 8, cy - 20, cx + 30, cy - 2, fill="#eaf2ff", width=3)
-        self.render_canvas.create_text(cx, cy + 32, fill="#cfe2ff", text="隔离开关")
-
-    def _draw_transformer_symbol(self, cx: float, cy: float) -> None:
-        self.render_canvas.create_oval(cx - 36, cy - 22, cx - 4, cy + 22, outline="#77a9e8", width=3)
-        self.render_canvas.create_oval(cx + 4, cy - 22, cx + 36, cy + 22, outline="#77a9e8", width=3)
-        self.render_canvas.create_text(cx, cy + 36, fill="#cfe2ff", text="变压器")
-
-    def _draw_line_symbol(self, cx: float, cy: float) -> None:
-        self.render_canvas.create_line(cx - 54, cy - 20, cx + 54, cy + 20, fill="#80b6ff", width=3)
-        self.render_canvas.create_line(cx - 54, cy + 20, cx + 54, cy - 20, fill="#80b6ff", width=3)
-        self.render_canvas.create_text(cx, cy + 38, fill="#cfe2ff", text="线路端")
-
-    def _draw_generic_symbol(self, cx: float, cy: float) -> None:
-        self.render_canvas.create_rectangle(cx - 28, cy - 28, cx + 28, cy + 28, outline="#77a9e8", width=2)
-        self.render_canvas.create_text(cx, cy + 40, fill="#cfe2ff", text="通用设备")
+        size_factor = max(0.8, min(1.8, float(voltage) / 10.0)) if str(voltage).replace(".", "", 1).isdigit() else 1.0
+        box = [
+            (-80 * size_factor, -45 * size_factor, -45 * size_factor),
+            (80 * size_factor, -45 * size_factor, -45 * size_factor),
+            (80 * size_factor, 45 * size_factor, -45 * size_factor),
+            (-80 * size_factor, 45 * size_factor, -45 * size_factor),
+            (-80 * size_factor, -45 * size_factor, 45 * size_factor),
+            (80 * size_factor, -45 * size_factor, 45 * size_factor),
+            (80 * size_factor, 45 * size_factor, 45 * size_factor),
+            (-80 * size_factor, 45 * size_factor, 45 * size_factor),
+        ]
+        projected, _scale = self._project_points_fit(box)
+        center_x = canvas_w * 0.55
+        center_y = canvas_h * 0.54
+        shifted = [(center_x + (x - 220), center_y + (y - 220)) for x, y in projected]
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ]
+        for a, b in edges:
+            x1, y1 = shifted[a]
+            x2, y2 = shifted[b]
+            self.render_canvas.create_line(x1, y1, x2, y2, fill="#8ad4ff", width=2)
+        self.render_canvas.create_text(70, canvas_h - 70, anchor=tk.NW, fill="#a7b7cd", text="说明：属性文件暂无可用MOD时，采用3D设备占位线框渲染。")
 
     @staticmethod
     def _project_point(x: float, y: float, z: float) -> tuple[float, float]:
