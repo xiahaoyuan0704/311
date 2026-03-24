@@ -333,6 +333,44 @@ def parse_obj_vertices_edges(text: str) -> tuple[list[tuple[float, float, float]
     return vertices, sorted(edges)
 
 
+def parse_obj_mesh(text: str) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]:
+    """Parse OBJ vertices and triangulated faces for shaded rendering."""
+    vertices: list[tuple[float, float, float]] = []
+    triangles: list[tuple[int, int, int]] = []
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("v "):
+            parts = line.split()
+            if len(parts) >= 4:
+                try:
+                    vertices.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                except ValueError:
+                    continue
+        elif line.startswith("f "):
+            parts = line.split()[1:]
+            indices: list[int] = []
+            for p in parts:
+                token = p.split("/")[0]
+                try:
+                    idx = int(token)
+                except ValueError:
+                    continue
+                if idx > 0:
+                    indices.append(idx - 1)
+            if len(indices) < 3:
+                continue
+            pivot = indices[0]
+            for i in range(1, len(indices) - 1):
+                a, b = indices[i], indices[i + 1]
+                if pivot != a and a != b and b != pivot:
+                    triangles.append((pivot, a, b))
+
+    return vertices, triangles
+
+
 def parse_numeric_triplets(text: str) -> list[tuple[float, float, float]]:
     """Try to parse generic numeric xyz points from non-OBJ .mod text."""
 

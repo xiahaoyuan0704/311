@@ -10,6 +10,7 @@ from gim_desktop.model import (
     find_related_mod_path,
     load_gim_package,
     parse_obj_vertices_edges,
+    parse_obj_mesh,
     parse_numeric_triplets,
     parse_points_from_binary,
     parse_property_document,
@@ -79,6 +80,9 @@ class GimPackageTests(unittest.TestCase):
         verts, edges = parse_obj_vertices_edges(obj)
         self.assertEqual(len(verts), 4)
         self.assertGreaterEqual(len(edges), 4)
+        verts2, tris = parse_obj_mesh(obj)
+        self.assertEqual(len(verts2), 4)
+        self.assertEqual(len(tris), 2)
 
     def test_text_preview_detection(self) -> None:
         self.assertTrue(can_preview_as_text("a.dev", b"A=B=1"))
